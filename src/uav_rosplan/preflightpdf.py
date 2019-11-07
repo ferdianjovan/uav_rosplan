@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 
+import os
 from datetime import datetime
-
+from reportlab.pdfgen import canvas
+# ROS Package
 import roslib
 import rospy
-from reportlab.pdfgen import canvas
 
 
 class PreFlightPDF(object):
@@ -14,6 +15,8 @@ class PreFlightPDF(object):
         """
 
         pkg_path = roslib.packages.get_pkg_dir('uav_rosplan')
+        if not os.path.exists(pkg_path + '/docs/'):
+            os.makedirs(pkg_path + '/docs/')
         self.canvas = canvas.Canvas(
             pkg_path + '/docs/preflight_check_%s.pdf' %
             datetime.fromtimestamp(rospy.Time.now().secs))
