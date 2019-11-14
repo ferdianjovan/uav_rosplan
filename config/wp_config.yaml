@@ -1,4 +1,4 @@
-config: fake_waypoints
+config: fenswood
 waypoints:
 # hold_time in second, rel_alt is height above ground 
 # Please see Waypoint.msg in mavros_msgs package for other parameters
@@ -6,4 +6,4 @@ waypoints:
 - {hold_time: 2.0, radius: 1.0, yaw: 0.0, lat: 51.422662, long: -2.671580, rel_alt: 30.0}
 - {hold_time: 2.0, radius: 1.0, yaw: 0.0, lat: 51.423117, long: -2.669782, rel_alt: 40.0}
 - {hold_time: 2.0, radius: 1.0, yaw: 0.0, lat: 51.423590, long: -2.670176, rel_alt: 30.0}
-- {hold_time: 30.0, radius: 1.0, yaw: 0.0, lat: 51.423389, long: -2.671200, rel_alt: 20.0}
+- {hold_time: 10.0, radius: 1.0, yaw: 0.0, lat: 51.423389, long: -2.671200, rel_alt: 20.0}

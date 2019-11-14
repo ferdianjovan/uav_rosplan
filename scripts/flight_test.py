@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 # 3rd Party Packages
+import sys
 import argparse
 
 import roslib
@@ -12,7 +13,7 @@ from pygeodesy import GeoidKarney
 from uav_rosplan.interface import UAVActionInterface
 from uav_rosplan.preflightcheck import PreFlightCheck
 
-seq = 3
+seq = 1
 home_poses = list()
 
 
@@ -26,9 +27,9 @@ def create_home_poses():
     global home_poses
     geoid_interpolator = GeoidKarney(
         roslib.packages.get_pkg_dir('uav_rosplan') + '/config/egm96-5.pgm')
-    for i in range(-3, 4):
-        new_lat = home.geo.latitude + (i * 2e-05)
-        new_long = home.geo.longitude + (i * 2e-05)
+    for i in range(-1, 2):
+        new_lat = home.geo.latitude + (i * 1e-05)
+        new_long = home.geo.longitude + (i * 1e-05)
         home_poses.append(
             (new_lat, new_long, geoid_interpolator.height(new_lat, new_long)))
 
@@ -62,18 +63,31 @@ if __name__ == '__main__':
                             dest='home',
                             default='0',
                             help='Monitoring home (Yes[1] / No[0])')
+    parser_arg.add_argument('-wp',
+                            dest='waypoint',
+                            default='0',
+                            help='Go to specific waypoint')
     args = parser_arg.parse_args()
     rospy.set_param('~wp_file', args.wp_file)
     # Initialise UAV
     uav = UAVActionInterface()
-    preflightcheck = PreFlightCheck(args.mavlink_conn)
+    preflightchecked = False
+    for _ in range(3):
+        try:
+            preflightcheck = PreFlightCheck(args.mavlink_conn, uav)
+            preflightchecked = True
+        except RuntimeError:
+            preflightchecked = False
+        if preflightchecked:
+            break
     try:
         init_batt = float(preflightcheck._init_batt.get())
         min_batt = float(preflightcheck._low_batt.get())
         uav.set_battery(init_batt, min_batt)
     except ValueError:
         rospy.logwarn('Initial / Minimum Battery can\'t be set!')
-        pass
+        sys.exit(2)
+
     rospy.loginfo('Enabling guided mode: %d' % uav.guided_mode())
     rospy.loginfo('Waiting for the UAV to be ARMED ...')
     while not uav.state.armed:
@@ -84,18 +98,25 @@ if __name__ == '__main__':
         for _ in range(20):
             uav._rate.sleep()
 
-        rospy.Subscriber('/mavros/home_position/home',
-                         HomePosition,
-                         home_cb,
-                         queue_size=10)
-        rospy.loginfo('Waiting for /mavros/cmd/set_home service ...')
-        rospy.wait_for_service('/mavros/cmd/set_home')
-        set_home_proxy = rospy.ServiceProxy('/mavros/cmd/set_home',
-                                            CommandHome)
-        create_home_poses()
-        rospy.Timer(rospy.Duration(5), move_home)
-        rospy.loginfo('Full mission completed: %d' %
-                      uav.full_mission_auto(1, rospy.Duration(600, 0)))
-        # rospy.loginfo('Go to completed: %d' % uav.goto(1))
+        if bool(int(args.home)):
+            rospy.Subscriber('/mavros/home_position/home',
+                             HomePosition,
+                             home_cb,
+                             queue_size=10)
+            rospy.loginfo('Waiting for /mavros/cmd/set_home service ...')
+            rospy.wait_for_service('/mavros/cmd/set_home')
+            set_home_proxy = rospy.ServiceProxy('/mavros/cmd/set_home',
+                                                CommandHome)
+            create_home_poses()
+            rospy.Timer(rospy.Duration(7), move_home, oneshot=True)
+        if int(args.waypoint) == 0:
+            rospy.loginfo('Full mission completed: %d' %
+                          uav.full_mission_auto(1, rospy.Duration(600, 0)))
+        else:
+            rospy.loginfo('Go to completed: %d' % uav.goto(int(args.waypoint)))
     rospy.loginfo('RTL success: %d' %
                   uav.return_to_land(monitor_home=bool(int(args.home))))
+    rospy.loginfo('Waiting for motor disarming ...')
+    while uav.state.armed:
+        uav._rate.sleep()
+    rospy.loginfo('Motor disarm ...')

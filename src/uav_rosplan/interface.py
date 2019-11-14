@@ -4,10 +4,10 @@ import numpy as np
 import roslib
 import rospy
 import yaml
-from mavros_msgs.msg import (GlobalPositionTarget, HomePosition, State,
-                             Waypoint, WaypointReached)
-from mavros_msgs.srv import (CommandBool, CommandHome, CommandTOL, SetMode,
-                             WaypointClear, WaypointPush, WaypointSetCurrent)
+from mavros_msgs.msg import (HomePosition, State, Waypoint, WaypointReached)
+from mavros_msgs.srv import (CommandBool, CommandHome, CommandLong, CommandTOL,
+                             SetMode, WaypointClear, WaypointPush,
+                             WaypointSetCurrent)
 from sensor_msgs.msg import BatteryState, NavSatFix
 from std_msgs.msg import Float64, Header
 
@@ -33,19 +33,22 @@ class UAVActionInterface(object):
         self.current_mode = ''
         self.hdg_correction = 1.
         self.gcs_intervention = False
+        self.accurate_altitude = True
         self.state = State()
         self.waypoints = list()
         self.home = HomePosition()
         self.compass_hdg = Float64()
         self.global_pose = NavSatFix()
-        self.battery_voltages = [self.INIT_VOLTAGE for _ in range(20)]
+        self.battery_voltages = [self.INIT_VOLTAGE for _ in range(30)]
         self.low_battery = False
-        self.gsetpoint_pub = rospy.Publisher(
-            '/mavros/setpoint_position/global',
-            GlobalPositionTarget,
-            queue_size=1)
+        self._rel_alt = [0. for _ in range(15)]
+        self._rel_alt_seq = 0
 
         # Service proxies
+        rospy.loginfo('Waiting for service /mavros/cmd/command ...')
+        rospy.wait_for_service('/mavros/cmd/command')
+        self._command_proxy = rospy.ServiceProxy('/mavros/cmd/command',
+                                                 CommandLong)
         rospy.loginfo('Waiting for service /mavros/mission/push ...')
         rospy.wait_for_service('/mavros/mission/push')
         self._add_wp_proxy = rospy.ServiceProxy('/mavros/mission/push',
@@ -154,13 +157,21 @@ class UAVActionInterface(object):
             long_change = abs(self.home.geo.longitude -
                               msg.geo.longitude) > 5e-06
             self.home_moved = lat_change or long_change
+            if self.home_moved:
+                rospy.logwarn(
+                    'Home has moved from (%.6f, %.6f) to (%.6f, %.6f)' %
+                    (self.home.geo.latitude, self.home.geo.longitude,
+                     msg.geo.latitude, msg.geo.longitude))
         self.home = msg
 
     def _relative_alt_cb(self, msg):
         """
         Relative altitude callback
         """
-        self.rel_alt = msg.data
+        self._rel_alt[self._rel_alt_seq % 15] = msg.data
+        self._rel_alt_seq += 1
+        self.rel_alt = np.mean(self._rel_alt)
+        self.accurate_altitude = self.rel_alt < -1.
 
     def _global_pose_cb(self, msg):
         """
@@ -172,7 +183,7 @@ class UAVActionInterface(object):
         """
         UAV Battery state callback
         """
-        self.battery_voltages[msg.header.seq % 20] = msg.voltage
+        self.battery_voltages[msg.header.seq % 30] = msg.voltage
         self.low_battery = (
             sum(self.battery_voltages) / float(len(self.battery_voltages)) <=
             self.MINIMUM_VOLTAGE)
@@ -184,23 +195,25 @@ class UAVActionInterface(object):
         rospy.loginfo('Setting up battery requirements...')
         self.INIT_VOLTAGE = init_batt
         self.MINIMUM_VOLTAGE = min_batt
-        self.battery_voltages = [self.INIT_VOLTAGE for _ in range(20)]
+        self.battery_voltages = [self.INIT_VOLTAGE for _ in range(30)]
         self.low_battery = False
 
     def overwatch_current_mode(self, event):
         """
         Watch whether human operator intervenes
         """
-        self.gcs_intervention = (self.current_mode != '') and (
+        mode_status_check = (self.current_mode != '') and (
             self.state.mode not in [self.current_mode, self.previous_mode])
-        # self.gcs_intervention = (self.current_mode !=
-        #                   '') and (self.current_mode != self.state.mode)
+        stabilize_on_land_check = (
+            self.state.mode == 'STABILIZE') and self.landed
+        self.gcs_intervention = mode_status_check and (
+            not stabilize_on_land_check)
 
     def update_landing_status(self, event):
         """
         Automated update landing (or flying) status
         """
-        self.landed = (self.rel_alt <= 0.1) or (not self.state.armed)
+        self.landed = (not self.state.armed) or (self.rel_alt <= 0.1)
 
     def load_wp_config_from_file(self):
         """
@@ -336,8 +349,6 @@ class UAVActionInterface(object):
                     took_off = self._takeoff_proxy(0.1, 0, 0, 0,
                                                    altitude).success
                 self._rate.sleep()
-            if took_off:
-                self.landed = False
         response = int(took_off and not self.low_battery)
         if (rospy.Time.now() - start) > duration:
             response = self.OUT_OF_DURATION
@@ -375,8 +386,6 @@ class UAVActionInterface(object):
             response = self.OUT_OF_DURATION
         elif self.gcs_intervention:
             response = self.EXTERNAL_INTERVENTION
-        else:
-            self._set_mode_proxy(0, 'loiter')
         return response
 
     def full_mission_auto(self, waypoint, duration=rospy.Duration(60, 0)):
@@ -431,6 +440,7 @@ class UAVActionInterface(object):
                 self.current_mode = 'RTL'
                 break
             self._rate.sleep()
+        # rtl_set = False
         while (rospy.Time.now() - start <
                duration) and not (rospy.is_shutdown()) and (
                    not self.gcs_intervention) and (not self.landed):
@@ -444,7 +454,6 @@ class UAVActionInterface(object):
         if self.gcs_intervention:
             rtl_set = self.EXTERNAL_INTERVENTION
         if emergency_landing:
-            self._set_mode_proxy(0, 'stabilize')
             self.add_waypoints()
         return int(rtl_set)
 
@@ -455,13 +464,10 @@ class UAVActionInterface(object):
         # Clear current wps available
         self._clear_wp_proxy()
         # wps[0] must be home waypoint
-        home_wp = Waypoint(Waypoint.FRAME_GLOBAL_REL_ALT, 21, False, False, .6,
-                           1., 0, np.float('nan'), self.home.geo.latitude,
+        home_wp = Waypoint(Waypoint.FRAME_GLOBAL_REL_ALT, 21, False, False,
+                           1.0, 1., 0, np.float('nan'), self.home.geo.latitude,
                            self.home.geo.longitude, 0.)
-        home_wp_alt = Waypoint(Waypoint.FRAME_GLOBAL_REL_ALT, 16, False, False,
-                               1., 0.5, 0., 0., self.home.geo.latitude,
-                               self.home.geo.longitude, .6)
-        wps = [home_wp, home_wp_alt, home_wp]
+        wps = [home_wp, home_wp]
         self.waypoints = wps
         # Push waypoints to mavros service
         if self._add_wp_proxy(0, wps).success:
@@ -469,3 +475,23 @@ class UAVActionInterface(object):
             # assume that set_current_wp_proxy sets wp to 1
             self.full_mission_auto(1, rospy.Duration(1, 0))
         return True
+
+    def reboot_autopilot_computer(self, duration=rospy.Duration(60, 0)):
+        """
+        Preflight reboot shutdown for autopilot and onboard computer
+        """
+        start = rospy.Time.now()
+        result = self._command_proxy(broadcast=False,
+                                     command=246,
+                                     confirmation=0,
+                                     param1=1.,
+                                     param2=1.,
+                                     param3=0.,
+                                     param4=0.,
+                                     param5=0.,
+                                     param6=0.,
+                                     param7=0.)
+        response = self.ACTION_SUCCESS if result.success else self.ACTION_FAIL
+        if (rospy.Time.now() - start) > duration:
+            response = self.OUT_OF_DURATION
+        return response

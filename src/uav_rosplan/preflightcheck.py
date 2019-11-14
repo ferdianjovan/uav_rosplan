@@ -1,26 +1,31 @@
 #!/usr/bin/env python
 
+# GUI packages
 import tkMessageBox
 from Tkinter import *
 from tkinter import scrolledtext
-from pygeodesy import GeoidKarney
+# Other 3rd party packages
 from pymavlink import mavutil
-
-import roslib
-import rospy
-from mavros_msgs.msg import HomePosition, RadioStatus, WaypointList
 from datetime import datetime
+from pygeodesy import GeoidKarney
+# ROS packages
+import rospy
+import roslib
+from std_msgs.msg import Float64
+from mavros_msgs.msg import HomePosition, RadioStatus, WaypointList
 from uav_rosplan.preflightpdf import PreFlightPDF
 
 
 class PreFlightCheck(object):
-    def __init__(self, connection, update_frequency=10.):
+    def __init__(self, connection, uav=None, update_frequency=10.):
         """
         Class for Pre-flight check interface
         """
+        self.uav = uav
         self.gps_raw = dict()
         self.waypoints = list()
         self.gps_text = None
+        self.rel_alt_text = None
         self.telemetry_text = None
         self.uav_home = HomePosition()
         self.uav_conn = mavutil.mavlink_connection(connection)
@@ -38,6 +43,10 @@ class PreFlightCheck(object):
                                           HomePosition,
                                           self.home_cb,
                                           queue_size=10)
+        self._rel_alt_sub = rospy.Subscriber('/mavros/global_position/rel_alt',
+                                             Float64,
+                                             self._relative_alt_cb,
+                                             queue_size=10)
         self._gps_timer = rospy.Timer(rospy.Duration(1. / update_frequency),
                                       self.update_gps)
         # interface
@@ -46,8 +55,16 @@ class PreFlightCheck(object):
         self._create_upper_frame()
         self._create_middle_frame()
         self._create_lower_frame()
+        self._create_param_frame()
         self._create_submit_frame()
         self._main_window.mainloop()
+
+    def _relative_alt_cb(self, msg):
+        """
+        Relative altitude callback
+        """
+        if self.rel_alt_text is not None:
+            self.rel_alt_text.set('Relative Altitude: %.2f' % float(msg.data))
 
     def home_cb(self, msg):
         """
@@ -458,6 +475,32 @@ class PreFlightCheck(object):
                     width=width,
                     justify=CENTER).grid(row=21, column=2)
 
+    def _create_param_frame(self):
+        param_frame = LabelFrame(self._main_window,
+                                 text='Flight Parameters',
+                                 padx=5,
+                                 pady=5)
+        param_frame.pack(side=TOP)
+        # first column
+        width = 42
+        self.rel_alt_text = StringVar()
+        self.rel_alt_text.set('Relative Altitude: -')
+        Label(param_frame, textvariable=self.rel_alt_text,
+              width=width).grid(row=0, column=0)
+        # second column
+        width = 30
+        Button(param_frame,
+               text='Reboot Autopilot/Onboard',
+               command=self._reboot_confirmation_box,
+               width=width).grid(row=0, column=1)
+
+    def _reboot_confirmation_box(self):
+        if tkMessageBox.askyesno('Confirmation',
+                                 'Are you sure to submit this form?'):
+            self.uav.reboot_autopilot_computer()
+            while not self.uav.add_waypoints():
+                self.uav._rate.sleep()
+
     def _create_submit_frame(self):
         submit_frame = LabelFrame(self._main_window, text='', padx=5, pady=5)
         submit_frame.pack(side=TOP)
@@ -481,9 +524,28 @@ class PreFlightCheck(object):
         self._radio_status_sub.unregister()
         self._waypoints_sub.unregister()
         self._home_sub.unregister()
+        self._rel_alt_sub.unregister()
         self._gps_timer.shutdown()
-        rospy.sleep(0.5)
+        rospy.sleep(1.)
         self._main_window.destroy()
+        try:
+            takeoff_amsl = '%.2f' % float(self._takeoff_amsl.get())
+            planned_agl = '%.2f' % float(self._planned_agl.get())
+            volt_taranis = '%.2f' % float(self._volt_taranis.get())
+            volt_dragon = '%.2f' % float(self._volt_dragon.get())
+            init_batt = '%.2f' % float(self._init_batt.get())
+            low_batt = '%.2f' % float(self._low_batt.get())
+        except ValueError:
+            takeoff_amsl = '%.2f' % self.geoid_interpolator.height(
+                self.uav_home.geo.latitude, self.uav_home.geo.longitude)
+            if len(self.waypoints):
+                planned_agl = '%.2f' % max([wp.z_alt for wp in self.waypoints])
+            else:
+                planned_agl = '-'
+            volt_taranis = '-'
+            volt_dragon = '-'
+            init_batt = '-'
+            low_batt = '-'
         # create pdf file
         data = {
             'uav_entry': self._uav_entry.get(),
@@ -494,8 +556,8 @@ class PreFlightCheck(object):
             'location': self._location.get(),
             'weather_acception': self._weather_acception.get(),
             'weather_description': self._weather_description.get(),
-            'takeoff_amsl': '%.2f' % float(self._takeoff_amsl.get()),
-            'planned_agl': '%.2f' % float(self._planned_agl.get()),
+            'takeoff_amsl': takeoff_amsl,
+            'planned_agl': planned_agl,
             'mission_obj': mission_obj,
             'num_of_wps': str(len(self.waypoints)),
             'rssi': rssi,
@@ -503,11 +565,11 @@ class PreFlightCheck(object):
             'hdop': hdop,
             'num_of_sats': num_of_sats,
             'rf_noise': 'V' if self._rf_noise.get() else 'X',
-            'volt_taranis': '%.2f' % float(self._volt_taranis.get()),
-            'volt_dragon': '%.2f' % float(self._volt_dragon.get()),
+            'volt_taranis': volt_taranis,
+            'volt_dragon': volt_dragon,
             'airframe': 'V' if self._airframe.get() else 'X',
-            'init_batt': '%.2f' % float(self._init_batt.get()),
-            'low_batt': '%.2f' % float(self._low_batt.get()),
+            'init_batt': init_batt,
+            'low_batt': low_batt,
             'hatch': 'V' if self._hatch.get() else 'X',
             'range_check': 'V' if self._range_check.get() else 'X',
             'ground_station': 'V' if self._ground_station.get() else 'X',
@@ -526,3 +588,13 @@ class PreFlightCheck(object):
             'gcs_check': 'V' if self._gps_check.get() else 'X'
         }
         PreFlightPDF(data)
+
+        def __del__(self):
+            # unsubscribing and destroying window
+            self._radio_status_sub.unregister()
+            self._waypoints_sub.unregister()
+            self._home_sub.unregister()
+            self._rel_alt_sub.unregister()
+            self._gps_timer.shutdown()
+            rospy.sleep(1.)
+            self._main_window.destroy()
