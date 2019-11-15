@@ -2,17 +2,18 @@
 
 # GUI packages
 import tkMessageBox
+from datetime import datetime
 from Tkinter import *
 from tkinter import scrolledtext
-# Other 3rd party packages
-from pymavlink import mavutil
-from datetime import datetime
-from pygeodesy import GeoidKarney
+
+import roslib
 # ROS packages
 import rospy
-import roslib
-from std_msgs.msg import Float64
 from mavros_msgs.msg import HomePosition, RadioStatus, WaypointList
+from pygeodesy import GeoidKarney
+# Other 3rd party packages
+from pymavlink import mavutil
+from std_msgs.msg import Float64
 from uav_rosplan.preflightpdf import PreFlightPDF
 
 
@@ -57,6 +58,7 @@ class PreFlightCheck(object):
         self._create_lower_frame()
         self._create_param_frame()
         self._create_submit_frame()
+        self._main_window.protocol("WM_DELETE_WINDOW", self.on_closing)
         self._main_window.mainloop()
 
     def _relative_alt_cb(self, msg):
@@ -99,7 +101,7 @@ class PreFlightCheck(object):
                 gps_raw = msg.to_dict()
                 self.gps_text.set(
                     'HDOP: %.2f, No. of satellites: %d' %
-                    (gps_raw['eph'] / 100., gps_raw['satellites_visible']))
+                    (float(gps_raw['eph']), gps_raw['satellites_visible']))
 
     def _create_upper_frame(self):
         upper_frame = LabelFrame(self._main_window, text='', padx=5, pady=5)
@@ -142,9 +144,7 @@ class PreFlightCheck(object):
         fourth_col_frame.pack(side=LEFT)
         self._flight_no = StringVar()
         self._flight_no.set('1')
-        Entry(fourth_col_frame,
-              width=20,
-              state='disabled',
+        Entry(fourth_col_frame, width=20,
               textvariable=self._flight_no).pack(side=TOP)
         self._location = StringVar()
         Entry(fourth_col_frame, width=20,
@@ -172,8 +172,10 @@ class PreFlightCheck(object):
         second_col_frame = LabelFrame(middle_frame, text='', padx=2, pady=2)
         second_col_frame.pack(side=LEFT)
         self._takeoff_amsl = StringVar()
-        self._takeoff_amsl.set('%.2f' % self.geoid_interpolator.height(
-            self.uav_home.geo.latitude, self.uav_home.geo.longitude))
+        takeoff_amsl = (
+            self.uav_home.geo.altitude - self.geoid_interpolator.height(
+                self.uav_home.geo.latitude, self.uav_home.geo.longitude))
+        self._takeoff_amsl.set('%.2f' % takeoff_amsl)
         Entry(second_col_frame,
               width=13,
               state='disabled',
@@ -495,8 +497,9 @@ class PreFlightCheck(object):
                width=width).grid(row=0, column=1)
 
     def _reboot_confirmation_box(self):
-        if tkMessageBox.askyesno('Confirmation',
-                                 'Are you sure to submit this form?'):
+        if tkMessageBox.askyesno(
+                'Confirmation',
+                'Are you sure to reboot autopilot and onboard computer?'):
             self.uav.reboot_autopilot_computer()
             while not self.uav.add_waypoints():
                 self.uav._rate.sleep()
@@ -589,7 +592,18 @@ class PreFlightCheck(object):
         }
         PreFlightPDF(data)
 
-        def __del__(self):
+    def __del__(self):
+        # unsubscribing and destroying window
+        self._radio_status_sub.unregister()
+        self._waypoints_sub.unregister()
+        self._home_sub.unregister()
+        self._rel_alt_sub.unregister()
+        self._gps_timer.shutdown()
+        rospy.sleep(1.)
+        self._main_window.destroy()
+
+    def on_closing(self):
+        if tkMessageBox.askokcancel("Quit", "Do you want to quit?"):
             # unsubscribing and destroying window
             self._radio_status_sub.unregister()
             self._waypoints_sub.unregister()

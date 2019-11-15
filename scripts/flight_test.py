@@ -30,8 +30,9 @@ def create_home_poses():
     for i in range(-1, 2):
         new_lat = home.geo.latitude + (i * 1e-05)
         new_long = home.geo.longitude + (i * 1e-05)
-        home_poses.append(
-            (new_lat, new_long, geoid_interpolator.height(new_lat, new_long)))
+        new_amsl = home.geo.altitude - geoid_interpolator.height(
+            home.geo.latitude, home.geo.longitude)
+        home_poses.append((new_lat, new_long, new_amsl))
 
 
 def move_home(event):
@@ -88,10 +89,10 @@ if __name__ == '__main__':
         rospy.logwarn('Initial / Minimum Battery can\'t be set!')
         sys.exit(2)
 
-    rospy.loginfo('Enabling guided mode: %d' % uav.guided_mode())
     rospy.loginfo('Waiting for the UAV to be ARMED ...')
     while not uav.state.armed:
         uav._rate.sleep()
+    rospy.loginfo('Enabling guided mode: %d' % uav.guided_mode())
     rospy.loginfo('Taking off: %d' %
                   uav.takeoff(rospy.get_param('~takeoff_altitude', 10.)))
     if not uav.low_battery:
@@ -108,7 +109,7 @@ if __name__ == '__main__':
             set_home_proxy = rospy.ServiceProxy('/mavros/cmd/set_home',
                                                 CommandHome)
             create_home_poses()
-            rospy.Timer(rospy.Duration(7), move_home, oneshot=True)
+            rospy.Timer(rospy.Duration(7), move_home)
         if int(args.waypoint) == 0:
             rospy.loginfo('Full mission completed: %d' %
                           uav.full_mission_auto(1, rospy.Duration(600, 0)))
