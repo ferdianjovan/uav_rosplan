@@ -31,9 +31,7 @@ class UAVActionInterface(object):
         self.wp_reached = -1
         self.previous_mode = ''
         self.current_mode = ''
-        self.hdg_correction = 1.
         self.gcs_intervention = False
-        self.accurate_altitude = True
         self.state = State()
         self.waypoints = list()
         self.home = HomePosition()
@@ -171,7 +169,6 @@ class UAVActionInterface(object):
         self._rel_alt[self._rel_alt_seq % 15] = msg.data
         self._rel_alt_seq += 1
         self.rel_alt = np.mean(self._rel_alt)
-        self.accurate_altitude = self.rel_alt < -1.
 
     def _global_pose_cb(self, msg):
         """
@@ -349,7 +346,7 @@ class UAVActionInterface(object):
                     took_off = self._takeoff_proxy(0.1, 0, 0, 0,
                                                    altitude).success
                 self._rate.sleep()
-        response = int(took_off and not self.low_battery)
+        response = int(took_off)
         if (rospy.Time.now() - start) > duration:
             response = self.OUT_OF_DURATION
         if self.gcs_intervention:

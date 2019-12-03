@@ -4,9 +4,9 @@
 import sys
 import argparse
 
-import roslib
 # ROS Packages
 import rospy
+import roslib
 from mavros_msgs.msg import HomePosition
 from mavros_msgs.srv import CommandHome
 from pygeodesy import GeoidKarney
