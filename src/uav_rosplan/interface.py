@@ -385,6 +385,23 @@ class UAVActionInterface(object):
             response = self.EXTERNAL_INTERVENTION
         return response
 
+    def request_arm(self, duration=rospy.Duration(60, 0)):
+        """
+        Request for arming UAV
+        """
+        start = rospy.Time.now()
+        rospy.loginfo('Waiting for the UAV to be ARMED ...')
+        while (rospy.Time.now() - start <
+               duration) and not (rospy.is_shutdown()) and (
+                   not self.gcs_intervention) and not self.state.armed:
+            self._rate.sleep()
+        response = int(self.state.armed)
+        if (rospy.Time.now() - start) > duration:
+            response = self.OUT_OF_DURATION
+        elif self.gcs_intervention:
+            response = self.EXTERNAL_INTERVENTION
+        return response
+
     def full_mission_auto(self, waypoint, duration=rospy.Duration(60, 0)):
         """
         Go from waypoint i to the last

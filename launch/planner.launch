@@ -13,7 +13,7 @@
   <arg name="use_problem_topic" default="true" />
 
   <!-- planner will produce output plan and write to this location -->
-  <arg name="data_path" default="$(find uav_rosplan)/plan/" />
+  <arg name="data_path" default="$(find uav_rosplan)/pddl/" />
 
   <!-- knowledge base -->
   <node name="rosplan_knowledge_base" pkg="rosplan_knowledge_base" type="knowledgeBase" respawn="false" output="screen">

@@ -33,6 +33,7 @@
     (:action request_arm
         :parameters (?v - uav)
         :precondition (and (landed ?v)
+            (guided ?v)
             (preflightchecked ?v)
             ; (not (airborne ?v))
         )
@@ -41,9 +42,7 @@
 
     (:action guide_mode
         :parameters (?v - uav)
-        :precondition (and (preflightchecked ?v)
-            (armed ?v)
-        )
+        :precondition (and (preflightchecked ?v))
         :effect (and (guided ?v))
     )
 

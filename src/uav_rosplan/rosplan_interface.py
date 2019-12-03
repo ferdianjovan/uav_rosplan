@@ -79,7 +79,7 @@ class UAVInterface(object):
         parameters = list()
         update_types = list()
         response = self._operator_proxy(op_name)
-        for predicate in response.op.formula.at_start_add_effects:
+        for predicate in response.op.at_start_add_effects:
             predicate_names.append(predicate.name)
             params = list()
             for typed_param in predicate.typed_parameters:
@@ -89,7 +89,7 @@ class UAVInterface(object):
                         break
             parameters.append(params)
             update_types.append(KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE)
-        for predicate in response.op.formula.at_start_del_effects:
+        for predicate in response.op.at_start_del_effects:
             predicate_names.append(predicate.name)
             params = list()
             for typed_param in predicate.typed_parameters:
@@ -102,7 +102,48 @@ class UAVInterface(object):
         return self.update_predicates(predicate_names, parameters,
                                       update_types)
 
-    # def _action_template(self,
+    def _dispatch_cb(self, msg):
+        """
+        Function for action_dispatch callback
+        """
+        rospy.loginfo('%s: action received' % self.name)
+        # parse action message
+        if msg.name == 'preflightcheck':
+            self._action(msg, self.preflightcheck)
+        elif msg.name == 'guide_mode':
+            self._action(msg, self.uav.guided_mode)
+        elif msg.name == 'request_arm':
+            self._action(msg, self.uav.request_arm)
+        elif msg.name == 'takeoff':
+            self._action(msg, self.uav.takeoff,
+                         [rospy.get_param('~takeoff_altitude', 10.)])
+        elif msg.name == 'goto_waypoint':
+            self._action(msg, self.goto_waypoint, [msg.parameters])
+        elif msg.name == 'rtl':
+            self._action(msg, self.uav.return_to_land, [False])
+
+    def _action(self, action_dispatch, action_func, action_params=list()):
+        """
+        Template uav action for generic uav action
+        such as request_arm, takeoff etc
+        """
+        self.publish_feedback(action_dispatch.action_id, 'action enabled')
+        start_time = rospy.Time(action_dispatch.dispatch_time)
+        duration = rospy.Duration(action_dispatch.duration)
+        self._rate.sleep()
+        rospy.loginfo('Dispatching %s action at %s with duration %s ...' %
+                      (action_dispatch.name, str(
+                          start_time.secs), str(duration.to_sec())))
+        if action_func(*action_params) == self.uav.ACTION_SUCCESS:
+            if self._apply_operator_effect(action_dispatch.name,
+                                           action_dispatch.parameters):
+                self.publish_feedback(action_dispatch.action_id,
+                                      'action achieved')
+            else:
+                self.publish_feedback(action_dispatch.action_id,
+                                      'action failed')
+        else:
+            self.publish_feedback(action_dispatch.action_id, 'action failed')
 
     def knowledge_update(self, event):
         """
@@ -123,9 +164,9 @@ class UAVInterface(object):
                 KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
             ]
         if self.uav.landed != self.uav_landed:
-            pred_names.append(['landed', 'airborne'])
-            params.append([KeyValue('v', self.name)],
-                          [KeyValue('v', self.name)])
+            pred_names.extend(['landed', 'airborne'])
+            params.extend([[KeyValue('v', self.name)],
+                           [KeyValue('v', self.name)]])
             update_types.extend(update_type)
             self.uav_landed = self.uav.landed
         # uav position in waypoints update
@@ -152,12 +193,14 @@ class UAVInterface(object):
                  KeyValue('wp', 'wp%d' % wp_seq)])
             update_types.append(KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE)
             # remove previous wp that uav resided
-            pred_names.append('uav_at')
-            params.append([
-                KeyValue('v', self.name),
-                KeyValue('wp', 'wp%d' % self.uav_wp)
-            ])
-            update_types.append(KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE)
+            if self.uav_wp != -1:
+                pred_names.append('uav_at')
+                params.append([
+                    KeyValue('v', self.name),
+                    KeyValue('wp', 'wp%d' % self.uav_wp)
+                ])
+                update_types.append(
+                    KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE)
             # update visited state
             pred_names.append('visited')
             params.append([KeyValue('wp', 'wp%d' % wp_seq)])
@@ -165,11 +208,11 @@ class UAVInterface(object):
             self.uav_wp = wp_seq
         # guided status update
         if self.uav.state.guided and not self.guided:
-            update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE,
+            update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
         elif not self.uav.state.guided and self.guided:
-            update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE,
+            update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
         if self.uav.state.guided != self.guided:
-            pred_names.append(['guided'])
+            pred_names.append('guided')
             params.append([KeyValue('v', self.name)])
             update_types.append(update_type)
             self.guided = self.uav.state.guided
@@ -230,25 +273,6 @@ class UAVInterface(object):
             success = success and self._knowledge_update_proxy(req).success
         return success
 
-    def _dispatch_cb(self, msg):
-        """
-        Function for action_dispatch callback
-        """
-        rospy.loginfo('%s: action received' % self.name)
-        # parse action message
-        if msg.name == 'preflightcheck':
-            self.preflightcheck(msg)
-        elif msg.name == 'guide_mode':
-            self.guide_mode(msg)
-        elif msg.name == 'request_arm':
-            self.request_arm(msg)
-        elif msg.name == 'takeoff':
-            self.takeoff(msg)
-        elif msg.name == 'goto_waypoint':
-            self.goto_waypoint(msg)
-        elif msg.name == 'rtl':
-            self.rtl(msg)
-
     def publish_feedback(self, action_id, fbstatus):
         """
         Function to publish action feedback to action_feedback topic
@@ -258,173 +282,31 @@ class UAVInterface(object):
         feedback.status = fbstatus
         self._feedback_publisher.publish(feedback)
 
-    def _match_predicate_params(self, pred_name, params):
-        """
-        Function to find matching KeyValue for predicates
-        """
-        matched = list()
-        response = self._predicate_proxy(pred_name)
-        for typed_param in response.predicate.typed_parameters:
-            for param in params:
-                if typed_param.key == param.key:
-                    matched.append(param)
-                    break
-        return matched
-
-    def preflightcheck(self, action_dispatch):
-        """
-        Pre-flight check action interfacing with ROSPlan
-        """
-        self.publish_feedback(action_dispatch.action_id, 'action enabled')
-        start_time = rospy.Time(action_dispatch.dispatch_time)
-        duration = rospy.Duration(action_dispatch.duration)
-        self._rate.sleep()
-        rospy.loginfo('Dispatching setting mode to %s action ...' %
-                      action_dispatch.name)
-        rospy.loginfo('Dispatch action at %s with duration %s' %
-                      (str(start_time.secs), str(duration.to_sec())))
+    def preflightcheck(self, duration=rospy.Duration(600, 0)):
+        start = rospy.Time.now()
         # preflight process
         preflightcheck = PreFlightCheck(self.mavlink_conn, self.uav)
         try:
             init_batt = float(preflightcheck._init_batt.get())
             min_batt = float(preflightcheck._low_batt.get())
             self.uav.set_battery(init_batt, min_batt)
-            if self._apply_operator_effect(action_dispatch.name,
-                                           action_dispatch.parameters):
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action achieved')
-            else:
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action failed')
+            response = self.uav.ACTION_SUCCESS
         except ValueError:
             rospy.logwarn('Pre-flight check doesn\'t have correct inputs!')
-            self.publish_feedback(action_dispatch.action_id, 'action failed')
+            response = self.uav.ACTION_FAIL
+        if (rospy.Time.now() - start) > duration:
+            response = self.OUT_OF_DURATION
+        return response
 
-    def request_arm(self, action_dispatch):
+    def goto_waypoint(self, dispatch_params, duration=rospy.Duration(60, 0)):
         """
-        Request arm action interfacing with ROSPlan
+        Go to waypoint action for UAV
         """
-        self.publish_feedback(action_dispatch.action_id, 'action enabled')
-        start_time = rospy.Time(action_dispatch.dispatch_time)
-        duration = rospy.Duration(action_dispatch.duration)
-        self._rate.sleep()
-        rospy.loginfo('Dispatching setting mode to %s action ...' %
-                      action_dispatch.name)
-        rospy.loginfo('Dispatch action at %s with duration %s' %
-                      (str(start_time.secs), str(duration.to_sec())))
-        rospy.loginfo('Waiting for the UAV to be ARMED ...')
-        while not self.uav.state.armed:
-            self._rate.sleep()
-        if self.uav.state.armed:
-            if self._apply_operator_effect(action_dispatch.name,
-                                           action_dispatch.parameters):
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action achieved')
-            else:
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action failed')
-        else:
-            self.publish_feedback(action_dispatch.action_id, 'action failed')
-
-    def guide_mode(self, action_dispatch):
-        """
-        Setting uav to guide mode action interfacing with ROSPlan
-        """
-        self.publish_feedback(action_dispatch.action_id, 'action enabled')
-        start_time = rospy.Time(action_dispatch.dispatch_time)
-        duration = rospy.Duration(action_dispatch.duration)
-        self._rate.sleep()
-        rospy.loginfo('Dispatching setting mode to %s action ...' %
-                      action_dispatch.name)
-        rospy.loginfo('Dispatch action at %s with duration %s' %
-                      (str(start_time.secs), str(duration.to_sec())))
-        action_succeed = self.uav.guided_mode()
-        if action_succeed == self.uav.ACTION_SUCCESS:
-            if self._apply_operator_effect(action_dispatch.name,
-                                           action_dispatch.parameters):
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action achieved')
-            else:
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action failed')
-        else:
-            self.publish_feedback(action_dispatch.action_id, 'action failed')
-
-    def takeoff(self, action_dispatch):
-        """
-        UAV takeoff action interfacing with ROSPlan
-        """
-        self.publish_feedback(action_dispatch.action_id, 'action enabled')
-        start_time = rospy.Time(action_dispatch.dispatch_time)
-        duration = rospy.Duration(action_dispatch.duration)
-        self._rate.sleep()
-        rospy.loginfo('Dispatching setting mode to %s action ...' %
-                      action_dispatch.name)
-        rospy.loginfo('Dispatch action at %s with duration %s' %
-                      (str(start_time.secs), str(duration.to_sec())))
-
-        action_succeed = self.uav.takeoff(
-            rospy.get_param('~takeoff_altitude', 10.))
-        if action_succeed == self.uav.ACTION_SUCCESS:
-            if self._apply_operator_effect(action_dispatch.name,
-                                           action_dispatch.parameters):
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action achieved')
-            else:
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action failed')
-        else:
-            self.publish_feedback(action_dispatch.action_id, 'action failed')
-
-    def rtl(self, action_dispatch):
-        """
-        UAV return to launch action interfacing with ROSPlan
-        """
-        self.publish_feedback(action_dispatch.action_id, 'action enabled')
-        start_time = rospy.Time(action_dispatch.dispatch_time)
-        duration = rospy.Duration(action_dispatch.duration)
-        self._rate.sleep()
-        rospy.loginfo('Dispatching setting mode to %s action ...' %
-                      action_dispatch.name)
-        rospy.loginfo('Dispatch action at %s with duration %s' %
-                      (str(start_time.secs), str(duration.to_sec())))
-        action_succeed = self.uav.return_to_land(monitor_home=False)
-        if action_succeed == self.uav.ACTION_SUCCESS:
-            if self._apply_operator_effect(action_dispatch.name,
-                                           action_dispatch.parameters):
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action achieved')
-            else:
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action failed')
-        else:
-            self.publish_feedback(action_dispatch.action_id, 'action failed')
-
-    def goto_waypoint(self, action_dispatch):
-        """
-        UAV return to launch action interfacing with ROSPlan
-        """
-        self.publish_feedback(action_dispatch.action_id, 'action enabled')
-        start_time = rospy.Time(action_dispatch.dispatch_time)
-        duration = rospy.Duration(action_dispatch.duration)
-        self._rate.sleep()
-        rospy.loginfo('Dispatching setting mode to %s action ...' %
-                      action_dispatch.name)
-        rospy.loginfo('Dispatch action at %s with duration %s' %
-                      (str(start_time.secs), str(duration.to_sec())))
         waypoint = -1
-        for param in action_dispatch.parameters:
+        for param in dispatch_params:
             if param.key == 'to':
-                waypoint = int(param.value)
+                waypoint = int(param.value[2:])
                 break
-        action_succeed = self.uav.goto(self, waypoint)
-        if action_succeed == self.uav.ACTION_SUCCESS:
-            if self._apply_operator_effect(action_dispatch.name,
-                                           action_dispatch.parameters):
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action achieved')
-            else:
-                self.publish_feedback(action_dispatch.action_id,
-                                      'action failed')
-        else:
-            self.publish_feedback(action_dispatch.action_id, 'action failed')
+        response = self.uav.goto(
+            waypoint, duration) if waypoint != -1 else self.uav.ACTION_FAIL
+        return response
