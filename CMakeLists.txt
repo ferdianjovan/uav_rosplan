@@ -8,6 +8,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
+  std_srvs
   tf
   rosplan_knowledge_msgs
   rosplan_dispatch_msgs
@@ -57,7 +58,7 @@ catkin_python_setup()
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES uav_rosplan
-  CATKIN_DEPENDS mavros_msgs roslib rospy sensor_msgs std_msgs tf rosplan_knowledge_msgs rosplan_dispatch_msgs diagnostic_msgs
+  CATKIN_DEPENDS mavros_msgs roslib rospy sensor_msgs std_msgs tf rosplan_knowledge_msgs rosplan_dispatch_msgs diagnostic_msgs std_srvs
 #  DEPENDS system_lib
 )
 

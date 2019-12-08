@@ -89,4 +89,19 @@
         )
     )
 
+    (:action lowbat_return
+        :parameters (?v - uav ?from ?to - waypoint)
+        :precondition (and (lowbat ?v)
+            (airborne ?v)
+            (armed ?v)
+            (uav_at ?v ?from)
+            (home ?to)
+        )
+        :effect (and (landed ?v)
+            (uav_at ?v ?to)
+            (not (uav_at ?v ?from))
+            (not (airborne ?v))
+        )
+    )
+
 )

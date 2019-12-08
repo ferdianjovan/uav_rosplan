@@ -45,6 +45,7 @@
     <arg name="domain_path"          value="$(arg domain_path)" />
     <arg name="problem_path"         value="$(arg autom_gen_problem_path)" />
     <arg name="data_path"            value="$(arg data_path)" />
+        <!-- <arg name="planner_command"      value="timeout 100 $(find rosplan_planning_system)/common/bin/Contingent-FF DOMAIN PROBLEM" /> -->
     <arg name="planner_command"      value="timeout 100 $(find rosplan_planning_system)/common/bin/popf DOMAIN PROBLEM" />
   </include>
 

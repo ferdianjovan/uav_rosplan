@@ -1,31 +1,40 @@
 #!/usr/bin/env python
 
+# 3rd Party Packages
+from threading import Lock
+
+# ROS Packages
 import rospy
 from diagnostic_msgs.msg import KeyValue
-from rosplan_knowledge_msgs.msg import KnowledgeItem
 from rosplan_dispatch_msgs.msg import ActionDispatch, ActionFeedback
-from rosplan_knowledge_msgs.srv import (GetDomainPredicateDetailsService,
+from rosplan_knowledge_msgs.msg import KnowledgeItem
+from rosplan_knowledge_msgs.srv import (GetDomainOperatorDetailsService,
+                                        GetDomainPredicateDetailsService,
                                         KnowledgeUpdateService,
-                                        KnowledgeUpdateServiceRequest,
-                                        GetDomainOperatorDetailsService)
+                                        KnowledgeUpdateServiceRequest)
 from uav_rosplan.interface import UAVActionInterface
 from uav_rosplan.preflightcheck import PreFlightCheck
 
 
 class UAVInterface(object):
+
+    mutex = Lock()
+
     def __init__(self,
                  name='UAV1',
                  mavlink_conn='',
                  uav=None,
                  update_frequency=10.):
         """
-        A Class that interfaces ROSPlan and MAVROS for executing actions
+        A Class that interfaces ROSPlan and MAVROS for executing UAV actions
         """
         self.uav = uav
         self.name = name
         self.uav_landed = False
         self.uav_wp = -1
         self.guided = False
+        self.armed = False
+        self.lowbat = False
         self.mavlink_conn = mavlink_conn
         if uav is None:
             self.uav = UAVActionInterface()
@@ -61,14 +70,13 @@ class UAVInterface(object):
         self.instances_set = self.set_instances()
         self.init_set = False
         if not self.instances_set:
-            rospy.logerr('Object instances for PDDL problem can\'t be set!')
+            rospy.logerr('%s\'s instances in PDDL can\'t be set!' % self.name)
         else:
             self.init_set = self.set_init()
         if not self.init_set:
-            rospy.logerr('Initial state for PDDL problem can\'t be set!')
+            rospy.logerr('%s\'s initial state can\'t be set!' % self.name)
         # Auto call functions
-        rospy.Timer(rospy.Duration(1. / update_frequency),
-                    self.knowledge_update)
+        rospy.Timer(self._rate.sleep_dur, self.knowledge_update)
 
     def _apply_operator_effect(self, op_name, dispatch_params):
         """
@@ -99,8 +107,9 @@ class UAVInterface(object):
                         break
             parameters.append(params)
             update_types.append(KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE)
-        return self.update_predicates(predicate_names, parameters,
-                                      update_types)
+        succeed = self.update_predicates(predicate_names, parameters,
+                                         update_types)
+        return succeed
 
     def _dispatch_cb(self, msg):
         """
@@ -120,6 +129,8 @@ class UAVInterface(object):
         elif msg.name == 'goto_waypoint':
             self._action(msg, self.goto_waypoint, [msg.parameters])
         elif msg.name == 'rtl':
+            self._action(msg, self.uav.return_to_land, [False])
+        elif msg.name == 'lowbat_return':
             self._action(msg, self.uav.return_to_land, [False])
 
     def _action(self, action_dispatch, action_func, action_params=list()):
@@ -144,6 +155,14 @@ class UAVInterface(object):
                                       'action failed')
         else:
             self.publish_feedback(action_dispatch.action_id, 'action failed')
+
+    def resume_plan(self):
+        """
+        Function to flag down external intervention
+        """
+        self.uav.previous_mode = self.uav.current_mode
+        self.uav.current_mode = self.uav.state.mode
+        self.uav.external_intervened = False
 
     def knowledge_update(self, event):
         """
@@ -170,20 +189,7 @@ class UAVInterface(object):
             update_types.extend(update_type)
             self.uav_landed = self.uav.landed
         # uav position in waypoints update
-        wp_seq = -1
-        if self.uav.wp_reached == -1:
-            latitude_cond = abs(self.uav.global_pose.latitude -
-                                self.uav.home.geo.latitude) < 1e-05
-            longitude_cond = abs(self.uav.global_pose.longitude -
-                                 self.uav.home.geo.longitude) < 1e-05
-            altitude_cond = abs(self.uav.global_pose.altitude -
-                                self.uav.home.geo.altitude) < 0.1
-            within_perimeter = (latitude_cond and longitude_cond)
-            within_perimeter = (within_perimeter and altitude_cond)
-            wp_seq = 0 if within_perimeter else -1
-        else:
-            wp_seq = self.uav.wp_reached
-        # wp_seq != -1 means it is in any wp
+        wp_seq = self.uav._current_wp
         # only update when self.uav_wp != wp_seq
         if wp_seq != -1 and self.uav_wp != wp_seq:
             # add current wp that uav resides
@@ -207,15 +213,38 @@ class UAVInterface(object):
             update_types.append(KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE)
             self.uav_wp = wp_seq
         # guided status update
-        if self.uav.state.guided and not self.guided:
+        update_guided = False
+        if self.uav.state.mode == 'GUIDED' and not self.guided:
             update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
-        elif not self.uav.state.guided and self.guided:
+            update_guided = True
+        elif self.uav.state.mode != 'GUIDED':
             update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
-        if self.uav.state.guided != self.guided:
+            update_guided = True
+        if update_guided:
             pred_names.append('guided')
             params.append([KeyValue('v', self.name)])
             update_types.append(update_type)
-            self.guided = self.uav.state.guided
+            self.guided = (self.uav.state.mode == 'GUIDED')
+        # arm status update
+        if self.uav.state.armed and not self.armed:
+            update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
+        elif not self.uav.state.armed and self.armed:
+            update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
+        if self.uav.state.armed != self.armed:
+            pred_names.append('armed')
+            params.append([KeyValue('v', self.name)])
+            update_types.append(update_type)
+            self.armed = self.uav.state.armed
+        # battery status update
+        if self.uav.low_battery and not self.lowbat:
+            update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
+        elif not self.uav.low_battery and self.lowbat:
+            update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
+        if self.uav.low_battery != self.lowbat:
+            pred_names.append('lowbat')
+            params.append([KeyValue('v', self.name)])
+            update_types.append(update_type)
+            self.lowbat = self.uav.low_battery
         # update state when necessary
         if pred_names != list():
             self.update_predicates(pred_names, params, update_types)
@@ -227,7 +256,8 @@ class UAVInterface(object):
         pred_names = ['home']
         params = [[KeyValue('wp', 'wp0')]]
         update_types = [KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE]
-        return self.update_predicates(pred_names, params, update_types)
+        succeed = self.update_predicates(pred_names, params, update_types)
+        return succeed
 
     def set_instances(self):
         """
@@ -263,6 +293,7 @@ class UAVInterface(object):
         """
         Add / remove predicate facts or goals
         """
+        self.mutex.acquire()
         success = True
         for idx, pred_name in enumerate(pred_names):
             req = KnowledgeUpdateServiceRequest()
@@ -271,6 +302,7 @@ class UAVInterface(object):
             req.knowledge.values.extend(parameters[idx])
             req.update_type = update_types[idx]
             success = success and self._knowledge_update_proxy(req).success
+        self.mutex.release()
         return success
 
     def publish_feedback(self, action_id, fbstatus):
@@ -283,6 +315,9 @@ class UAVInterface(object):
         self._feedback_publisher.publish(feedback)
 
     def preflightcheck(self, duration=rospy.Duration(600, 0)):
+        """
+        Preflight check action for UAV
+        """
         start = rospy.Time.now()
         # preflight process
         preflightcheck = PreFlightCheck(self.mavlink_conn, self.uav)

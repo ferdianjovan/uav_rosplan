@@ -31,7 +31,7 @@ class UAVActionInterface(object):
         self.wp_reached = -1
         self.previous_mode = ''
         self.current_mode = ''
-        self.gcs_intervention = False
+        self.external_intervened = False
         self.state = State()
         self.waypoints = list()
         self.home = HomePosition()
@@ -39,6 +39,7 @@ class UAVActionInterface(object):
         self.global_pose = NavSatFix()
         self.battery_voltages = [self.INIT_VOLTAGE for _ in range(30)]
         self.low_battery = False
+        self._current_wp = -1
         self._rel_alt = [0. for _ in range(15)]
         self._rel_alt_seq = 0
 
@@ -113,6 +114,8 @@ class UAVActionInterface(object):
                     self.update_landing_status)
         rospy.Timer(rospy.Duration(20. / update_frequency),
                     self.overwatch_current_mode)
+        rospy.Timer(rospy.Duration(1. / update_frequency),
+                    self.update_wp_position)
         rospy.loginfo('Adding WPs ...')
         self._wait(10)
         # Adding initial waypoints' configuration
@@ -185,6 +188,24 @@ class UAVActionInterface(object):
             sum(self.battery_voltages) / float(len(self.battery_voltages)) <=
             self.MINIMUM_VOLTAGE)
 
+    def update_wp_position(self, event):
+        """
+        Update UAV position in terms of waypoint
+        """
+        wp = -1
+        for idx, waypoint in enumerate(self.waypoints):
+            latitude_cond = abs(self.global_pose.latitude -
+                                waypoint.x_lat) < 1e-05
+            longitude_cond = abs(self.global_pose.longitude -
+                                 waypoint.y_long) < 1e-05
+            altitude_cond = abs(self.global_pose.altitude -
+                                (self.home.geo.altitude +
+                                 waypoint.z_alt)) < 0.2
+            if latitude_cond and longitude_cond and altitude_cond:
+                wp = idx
+                break
+        self._current_wp = wp
+
     def set_battery(self, init_batt, min_batt):
         """
         Setting initial battery and minimum battery condition
@@ -203,7 +224,7 @@ class UAVActionInterface(object):
             self.state.mode not in [self.current_mode, self.previous_mode])
         stabilize_on_land_check = (
             self.state.mode == 'STABILIZE') and self.landed
-        self.gcs_intervention = mode_status_check and (
+        self.external_intervened = mode_status_check and (
             not stabilize_on_land_check)
 
     def update_landing_status(self, event):
@@ -285,7 +306,7 @@ class UAVActionInterface(object):
         if self.state.mode != 'GUIDED':
             while (rospy.Time.now() - start <
                    duration) and (not rospy.is_shutdown()) and (
-                       not guided) and (not self.gcs_intervention):
+                       not guided) and (not self.external_intervened):
                 guided = self._set_mode_proxy(0, 'guided').mode_sent
                 if guided:
                     self.previous_mode = self.current_mode
@@ -298,7 +319,7 @@ class UAVActionInterface(object):
             guided = True
         if (rospy.Time.now() - start) > duration:
             guided = self.OUT_OF_DURATION
-        if self.gcs_intervention:
+        if self.external_intervened:
             guided = self.EXTERNAL_INTERVENTION
         return int(guided)
 
@@ -312,7 +333,7 @@ class UAVActionInterface(object):
         if not self.state.armed:
             while (rospy.Time.now() - start <
                    duration) and (not rospy.is_shutdown()) and (
-                       not armed) and (not self.gcs_intervention):
+                       not armed) and (not self.external_intervened):
                 armed = self._arming_proxy(True).success
                 self._rate.sleep()
             rospy.loginfo('Arming the UAV ...')
@@ -321,7 +342,7 @@ class UAVActionInterface(object):
         response = int(armed)
         if (rospy.Time.now() - start) > duration:
             response = self.OUT_OF_DURATION
-        if self.gcs_intervention:
+        if self.external_intervened:
             response = self.EXTERNAL_INTERVENTION
         return response
 
@@ -338,7 +359,7 @@ class UAVActionInterface(object):
             while (rospy.Time.now() - start <
                    duration) and (not rospy.is_shutdown()
                                   ) and (self.rel_alt - altitude) < -0.5 and (
-                                      not self.gcs_intervention):
+                                      not self.external_intervened):
                 if self.low_battery:
                     rospy.logwarn('Battery is below minimum voltage!')
                     break
@@ -349,7 +370,7 @@ class UAVActionInterface(object):
         response = int(took_off)
         if (rospy.Time.now() - start) > duration:
             response = self.OUT_OF_DURATION
-        if self.gcs_intervention:
+        if self.external_intervened:
             response = self.EXTERNAL_INTERVENTION
         return response
 
@@ -364,7 +385,7 @@ class UAVActionInterface(object):
         auto = False
         while (rospy.Time.now() - start <
                duration) and (not rospy.is_shutdown()) and (
-                   not self.gcs_intervention) and (not auto):
+                   not self.external_intervened) and (not auto):
             auto = self._set_mode_proxy(0, 'auto').mode_sent
             if auto:
                 self.previous_mode = self.current_mode
@@ -372,7 +393,7 @@ class UAVActionInterface(object):
             self._rate.sleep()
         rospy.loginfo('Setting mode to AUTO ...')
         while (rospy.Time.now() - start < duration) and not (
-                rospy.is_shutdown()) and (not self.gcs_intervention) and (
+                rospy.is_shutdown()) and (not self.external_intervened) and (
                     (waypoint != self.wp_reached)):
             if self.low_battery:
                 rospy.logwarn('Battery is below minimum voltage!')
@@ -381,7 +402,7 @@ class UAVActionInterface(object):
         response = int(waypoint == self.wp_reached)
         if (rospy.Time.now() - start) > duration:
             response = self.OUT_OF_DURATION
-        elif self.gcs_intervention:
+        elif self.external_intervened:
             response = self.EXTERNAL_INTERVENTION
         return response
 
@@ -393,12 +414,12 @@ class UAVActionInterface(object):
         rospy.loginfo('Waiting for the UAV to be ARMED ...')
         while (rospy.Time.now() - start <
                duration) and not (rospy.is_shutdown()) and (
-                   not self.gcs_intervention) and not self.state.armed:
+                   not self.external_intervened) and not self.state.armed:
             self._rate.sleep()
         response = int(self.state.armed)
         if (rospy.Time.now() - start) > duration:
             response = self.OUT_OF_DURATION
-        elif self.gcs_intervention:
+        elif self.external_intervened:
             response = self.EXTERNAL_INTERVENTION
         return response
 
@@ -414,7 +435,7 @@ class UAVActionInterface(object):
         auto = False
         while (rospy.Time.now() - start <
                duration) and (not rospy.is_shutdown()) and (
-                   not self.gcs_intervention) and len(wps_reached) < len(
+                   not self.external_intervened) and len(wps_reached) < len(
                        self.waypoints[waypoint:]):
             if not auto:
                 rospy.loginfo('Setting mode to AUTO ...')
@@ -431,7 +452,7 @@ class UAVActionInterface(object):
         response = int(len(wps_reached) == len(self.waypoints[waypoint:]))
         if (rospy.Time.now() - start) > duration:
             response = self.OUT_OF_DURATION
-        elif self.gcs_intervention:
+        elif self.external_intervened:
             response = self.EXTERNAL_INTERVENTION
         return response
 
@@ -445,7 +466,7 @@ class UAVActionInterface(object):
         emergency_landing = False
         start = rospy.Time.now()
         for i in range(3):
-            if self.gcs_intervention:
+            if self.external_intervened:
                 break
             rtl_set = self._set_mode_proxy(0, 'rtl').mode_sent
             if rtl_set:
@@ -457,7 +478,7 @@ class UAVActionInterface(object):
         # rtl_set = False
         while (rospy.Time.now() - start <
                duration) and not (rospy.is_shutdown()) and (
-                   not self.gcs_intervention) and (not self.landed):
+                   not self.external_intervened) and (not self.landed):
             cond = monitor_home and self.home_moved
             if cond or (not rtl_set and not emergency_landing):
                 emergency_landing = self.emergency_landing()
@@ -465,7 +486,7 @@ class UAVActionInterface(object):
                    (rtl_set or (emergency_landing and self.wp_reached == 1)))
         if (rospy.Time.now() - start) > duration:
             rtl_set = self.OUT_OF_DURATION
-        if self.gcs_intervention:
+        if self.external_intervened:
             rtl_set = self.EXTERNAL_INTERVENTION
         if emergency_landing:
             self.add_waypoints()
