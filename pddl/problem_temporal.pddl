@@ -12,6 +12,8 @@
         (landed hector)
         (home wp0)
         (visited hector wp0)
+        (= (battery-amount hector) 12.59)
+        (= (minimum-battery hector) 12.19)
     )
 
     (:goal (and
@@ -22,5 +24,7 @@
         (visited hector wp5)
         (landed hector)
     ))
+
+    (:metric minimize (total-time))
 
 )

@@ -193,14 +193,14 @@ class UAVInterface(object):
         # only update when self.uav_wp != wp_seq
         if wp_seq != -1 and self.uav_wp != wp_seq:
             # add current wp that uav resides
-            pred_names.append('uav_at')
+            pred_names.append('at')
             params.append(
                 [KeyValue('v', self.name),
                  KeyValue('wp', 'wp%d' % wp_seq)])
             update_types.append(KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE)
             # remove previous wp that uav resided
             if self.uav_wp != -1:
-                pred_names.append('uav_at')
+                pred_names.append('at')
                 params.append([
                     KeyValue('v', self.name),
                     KeyValue('wp', 'wp%d' % self.uav_wp)
@@ -209,7 +209,9 @@ class UAVInterface(object):
                     KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE)
             # update visited state
             pred_names.append('visited')
-            params.append([KeyValue('wp', 'wp%d' % wp_seq)])
+            params.append(
+                [KeyValue('v', self.name),
+                 KeyValue('wp', 'wp%d' % wp_seq)])
             update_types.append(KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE)
             self.uav_wp = wp_seq
         # guided status update

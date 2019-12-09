@@ -75,6 +75,27 @@
 	<param name="plan_topic"            value="/rosplan_parsing_interface/complete_plan" />
 	<param name="action_dispatch_topic" value="action_dispatch" />
 	<param name="action_feedback_topic" value="action_feedback" />
-  </node> 
+  </node>
+
+  <!-- <include file="$(find rosplan_planning_system)/launch/includes/simulated_action.launch">
+      <arg name="pddl_action_name" value="preflightcheck" />
+      <arg name="action_duration" value="5" />
+  </include>
+  <include file="$(find rosplan_planning_system)/launch/includes/simulated_action.launch">
+      <arg name="pddl_action_name" value="guide_mode" />
+      <arg name="action_duration" value="5" />
+  </include>
+  <include file="$(find rosplan_planning_system)/launch/includes/simulated_action.launch">
+      <arg name="pddl_action_name" value="request_arm" />
+      <arg name="action_duration" value="5" />
+  </include>
+  <include file="$(find rosplan_planning_system)/launch/includes/simulated_action.launch">
+      <arg name="pddl_action_name" value="goto_waypoint" />
+      <arg name="action_duration" value="30" />
+  </include>
+  <include file="$(find rosplan_planning_system)/launch/includes/simulated_action.launch">
+      <arg name="pddl_action_name" value="rtl" />
+      <arg name="action_duration" value="30" />
+  </include> -->
 
 </launch>

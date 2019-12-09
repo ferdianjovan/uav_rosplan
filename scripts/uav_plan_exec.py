@@ -65,10 +65,10 @@ class UAVExec(object):
         self._parser_proxy()
         self._rate.sleep()
         response = self._dispatch_proxy()
-        if not response.goal_achieved:
-            rospy.loginfo('Mission Failed')
-        else:
+        if response.goal_achieved:
             rospy.loginfo('Mission Succeed')
+        else:
+            rospy.loginfo('Mission Failed')
         return response.goal_achieved
 
     def lowbat_return(self, event=True):
@@ -84,10 +84,10 @@ class UAVExec(object):
             self.uav.update_predicates(self.goal_state[0], self.goal_state[1],
                                        update_types)
             self._rate.sleep()
-            pred_names = ['landed', 'uav_at']
+            pred_names = ['landed', 'at']
             params = [
-                [KeyValue('v', 'hector')],
-                [KeyValue('v', 'hector'),
+                [KeyValue('v', self.uav.name)],
+                [KeyValue('v', self.uav.name),
                  KeyValue('wp', 'wp0')],
             ]
             self.goal_state = (pred_names, params)
@@ -106,9 +106,16 @@ class UAVExec(object):
         pred_names = [
             'visited', 'visited', 'visited', 'visited', 'visited', 'landed'
         ]
-        params = [[KeyValue('wp', 'wp1')], [KeyValue('wp', 'wp2')],
-                  [KeyValue('wp', 'wp3')], [KeyValue('wp', 'wp4')],
-                  [KeyValue('wp', 'wp5')], [KeyValue('v', 'hector')]]
+        params = [[KeyValue('v', self.uav.name),
+                   KeyValue('wp', 'wp1')],
+                  [KeyValue('v', self.uav.name),
+                   KeyValue('wp', 'wp2')],
+                  [KeyValue('v', self.uav.name),
+                   KeyValue('wp', 'wp3')],
+                  [KeyValue('v', self.uav.name),
+                   KeyValue('wp', 'wp4')],
+                  [KeyValue('v', self.uav.name),
+                   KeyValue('wp', 'wp5')], [KeyValue('v', self.uav.name)]]
         self.goal_state = (pred_names, params)
         update_types = [
             KnowledgeUpdateServiceRequest.ADD_GOAL,

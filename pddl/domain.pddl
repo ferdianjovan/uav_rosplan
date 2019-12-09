@@ -6,12 +6,13 @@
     )
 
     (:types
-        uav waypoint - object
+        waypoint robot - object
+        uav asv - robot
     )
 
     (:predicates
-        (uav_at ?v - uav ?wp - waypoint)
-        (visited ?wp - waypoint)
+        (at ?r - robot ?wp - waypoint)
+        (visited ?r - robot ?wp - waypoint)
         (home ?wp - waypoint)
         (airborne ?v - uav)
         (landed ?v - uav)
@@ -30,6 +31,12 @@
         :effect (and (preflightchecked ?v))
     )
     
+    (:action guide_mode
+        :parameters (?v - uav)
+        :precondition (and (preflightchecked ?v))
+        :effect (and (guided ?v))
+    )
+
     (:action request_arm
         :parameters (?v - uav)
         :precondition (and (landed ?v)
@@ -39,12 +46,6 @@
         )
         :effect (and (armed ?v))
     )   
-
-    (:action guide_mode
-        :parameters (?v - uav)
-        :precondition (and (preflightchecked ?v))
-        :effect (and (guided ?v))
-    )
 
     (:action takeoff
         :parameters (?v - uav)
@@ -64,13 +65,13 @@
         :precondition (and (preflightchecked ?v)
             (armed ?v)
             (airborne ?v)
-            (uav_at ?v ?from)
+            (at ?v ?from)
             ; (not (lowbat ?v))
             ; (not (landed ?v))
         )
-        :effect (and (visited ?to)
-            (uav_at ?v ?to)
-            (not (uav_at ?v ?from))
+        :effect (and (at ?v ?to)
+            (visited ?v ?to)
+            (not (at ?v ?from))
         )
     )
 
@@ -79,12 +80,13 @@
         :precondition (and (airborne ?v)
             (preflightchecked ?v)
             (armed ?v)
-            (uav_at ?v ?from)
+            (at ?v ?from)
             (home ?to)
         )
         :effect (and (landed ?v)
-            (uav_at ?v ?to)
-            (not (uav_at ?v ?from))
+            (at ?v ?to)
+            (visited ?v ?to)
+            (not (at ?v ?from))
             (not (airborne ?v))
         )
     )
@@ -94,12 +96,13 @@
         :precondition (and (lowbat ?v)
             (airborne ?v)
             (armed ?v)
-            (uav_at ?v ?from)
+            (at ?v ?from)
             (home ?to)
         )
         :effect (and (landed ?v)
-            (uav_at ?v ?to)
-            (not (uav_at ?v ?from))
+            (at ?v ?to)
+            (visited ?v ?to)
+            (not (at ?v ?from))
             (not (airborne ?v))
         )
     )
