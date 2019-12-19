@@ -184,9 +184,8 @@ class UAVActionInterface(object):
         UAV Battery state callback
         """
         self.battery_voltages[msg.header.seq % 30] = msg.voltage
-        self.low_battery = (
-            sum(self.battery_voltages) / float(len(self.battery_voltages)) <=
-            self.MINIMUM_VOLTAGE)
+        self.low_battery = (np.mean(self.battery_voltages) <=
+                            self.MINIMUM_VOLTAGE)
 
     def update_wp_position(self, event):
         """

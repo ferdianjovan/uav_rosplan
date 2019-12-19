@@ -1,13 +1,22 @@
 (define (domain uas)
 
-    (:requirements
+    (:requirements 
         :strips
         :typing
+        :equality
+        :fluents
+        :durative-actions
+        :continuous-effects
     )
 
     (:types
         waypoint robot - object
         uav asv - robot
+    )
+
+    (:functions
+        (battery-amount ?r - robot)
+        (minimum-battery ?r - robot)
     )
 
     (:predicates
@@ -18,92 +27,106 @@
         (landed ?v - uav)
         (armed ?v - uav)
         (guided ?v - uav)
-        (lowbat ?v - uav)
         (preflightchecked ?v - uav)
     )
 
-    (:action preflightcheck
+    (:durative-action preflightcheck
         :parameters  (?v - uav)
-        :precondition (and (landed ?v)
-            ; (not (airborne ?v))
-            ; (not (armed ?v))
-        )
-        :effect (and (preflightchecked ?v))
-    )
-    
-    (:action guide_mode
-        :parameters (?v - uav)
-        :precondition (and (preflightchecked ?v))
-        :effect (and (guided ?v))
+        :duration (= ?duration 180)
+        :condition (and (over all (landed ?v)))
+        :effect (and (at end (preflightchecked ?v)))
     )
 
-    (:action request_arm
+    (:durative-action guide_mode
         :parameters (?v - uav)
-        :precondition (and (landed ?v)
-            (guided ?v)
-            (preflightchecked ?v)
-            ; (not (airborne ?v))
+        :duration (= ?duration 60)
+        :condition (and (over all (preflightchecked ?v)))
+        :effect (and (at end (guided ?v)))
+    )
+
+    (:durative-action request_arm
+        :parameters (?v - uav)
+        :duration (= ?duration 180)
+        :condition (and 
+            (at start (guided ?v))
+            (over all (landed ?v))
+            (over all (preflightchecked ?v))
         )
-        :effect (and (armed ?v))
+        :effect (and (at end (armed ?v)))
     )   
 
-    (:action takeoff
+    (:durative-action takeoff
         :parameters (?v - uav)
-        :precondition (and (landed ?v)
-            (guided ?v)
-            (armed ?v)
-            (preflightchecked ?v)
-            ; (not (lowbat ?v))
-            ; (not (airborne ?v))
+        :duration (= ?duration 60)
+        :condition (and 
+            (at start (landed ?v))
+            (at start (> (battery-amount ?v) (minimum-battery ?v)))
+            (over all (armed ?v))
+            (over all (guided ?v))
+            (over all (preflightchecked ?v))
         )
-        :effect (and (not (landed ?v)) (airborne ?v))
+        :effect (and 
+            (at start (not (landed ?v)))
+            (at end (airborne ?v))
+            (decrease (battery-amount ?v) (* 0.0001 #t))
+        )
     )
 
     ;; Move to any waypoint on a straight line
-    (:action goto_waypoint
+    (:durative-action goto_waypoint
         :parameters (?v - uav ?from ?to - waypoint)
-        :precondition (and (preflightchecked ?v)
-            (armed ?v)
-            (airborne ?v)
-            (at ?v ?from)
-            ; (not (lowbat ?v))
-            ; (not (landed ?v))
+        :duration (= ?duration 120)
+        :condition (and
+            (at start (at ?v ?from))
+            (at start (> (battery-amount ?v) (minimum-battery ?v)))
+            (over all (armed ?v))
+            (over all (airborne ?v))
+            (over all (preflightchecked ?v))
         )
-        :effect (and (at ?v ?to)
-            (visited ?v ?to)
-            (not (at ?v ?from))
+        :effect (and
+            (at start (not (at ?v ?from)))
+            (at end (at ?v ?to))
+            (at end (visited ?v ?to))
+            (decrease (battery-amount ?v) (* 0.0001 #t))
         )
     )
 
-    (:action rtl
+    (:durative-action rtl
         :parameters (?v - uav ?from ?to - waypoint)
-        :precondition (and (airborne ?v)
-            (preflightchecked ?v)
-            (armed ?v)
-            (at ?v ?from)
-            (home ?to)
+        :duration (= ?duration 240)
+        :condition (and
+            (at start (airborne ?v))
+            (at start (at ?v ?from))
+            (over all (home ?to))
+            (over all (armed ?v))
+            (over all (preflightchecked ?v))
         )
-        :effect (and (landed ?v)
-            (at ?v ?to)
-            (visited ?v ?to)
-            (not (at ?v ?from))
-            (not (airborne ?v))
+        :effect (and 
+            (at end (landed ?v))
+            (at end (at ?v ?to))
+            (at end (visited ?v ?to))
+            (at start (not (at ?v ?from)))
+            (at start (not (airborne ?v)))
+            (decrease (battery-amount ?v) (* 0.0001 #t))
         )
     )
 
-    (:action lowbat_return
+    (:durative-action lowbat_return
         :parameters (?v - uav ?from ?to - waypoint)
-        :precondition (and (lowbat ?v)
-            (airborne ?v)
-            (armed ?v)
-            (at ?v ?from)
-            (home ?to)
+        :duration (= ?duration 240)
+        :condition (and
+            (over all (home ?to))
+            (over all (armed ?v))
+            (at start (airborne ?v))
+            (at start (at ?v ?from))
+            (at start (<= (battery-amount ?v) (minimum-battery ?v)))
         )
-        :effect (and (landed ?v)
-            (at ?v ?to)
-            (visited ?v ?to)
-            (not (at ?v ?from))
-            (not (airborne ?v))
+        :effect (and 
+            (at end (landed ?v))
+            (at end (at ?v ?to))
+            (at start (not (at ?v ?from)))
+            (at start (not (airborne ?v)))
+            (decrease (battery-amount ?v) (* 0.0001 #t))
         )
     )
 

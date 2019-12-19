@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 
-# 3rd Party Packages
 from threading import Lock
 
+# 3rd Party Packages
+import numpy as np
 # ROS Packages
 import rospy
 from diagnostic_msgs.msg import KeyValue
@@ -28,6 +29,8 @@ class UAVInterface(object):
         """
         A Class that interfaces ROSPlan and MAVROS for executing UAV actions
         """
+        if uav is None:
+            self.uav = UAVActionInterface()
         self.uav = uav
         self.name = name
         self.uav_landed = False
@@ -36,8 +39,7 @@ class UAVInterface(object):
         self.armed = False
         self.lowbat = False
         self.mavlink_conn = mavlink_conn
-        if uav is None:
-            self.uav = UAVActionInterface()
+        self.battery_voltage = 0.0
         # Service proxies
         rospy.loginfo('Waiting for service /rosplan_knowledge_base/update ...')
         rospy.wait_for_service('/rosplan_knowledge_base/update')
@@ -87,7 +89,9 @@ class UAVInterface(object):
         parameters = list()
         update_types = list()
         response = self._operator_proxy(op_name)
-        for predicate in response.op.at_start_add_effects:
+        predicates = (response.op.at_start_add_effects +
+                      response.op.at_end_add_effects)
+        for predicate in predicates:
             predicate_names.append(predicate.name)
             params = list()
             for typed_param in predicate.typed_parameters:
@@ -97,7 +101,9 @@ class UAVInterface(object):
                         break
             parameters.append(params)
             update_types.append(KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE)
-        for predicate in response.op.at_start_del_effects:
+        predicates = (response.op.at_start_del_effects +
+                      response.op.at_end_del_effects)
+        for predicate in predicates:
             predicate_names.append(predicate.name)
             params = list()
             for typed_param in predicate.typed_parameters:
@@ -116,22 +122,23 @@ class UAVInterface(object):
         Function for action_dispatch callback
         """
         rospy.loginfo('%s: action received' % self.name)
+        duration = rospy.Duration(msg.duration)
         # parse action message
         if msg.name == 'preflightcheck':
-            self._action(msg, self.preflightcheck)
+            self._action(msg, self.preflightcheck, [duration])
         elif msg.name == 'guide_mode':
-            self._action(msg, self.uav.guided_mode)
+            self._action(msg, self.uav.guided_mode, [duration])
         elif msg.name == 'request_arm':
-            self._action(msg, self.uav.request_arm)
+            self._action(msg, self.uav.request_arm, [duration])
         elif msg.name == 'takeoff':
             self._action(msg, self.uav.takeoff,
-                         [rospy.get_param('~takeoff_altitude', 10.)])
+                         [rospy.get_param('~takeoff_altitude', 10.), duration])
         elif msg.name == 'goto_waypoint':
-            self._action(msg, self.goto_waypoint, [msg.parameters])
+            self._action(msg, self.goto_waypoint, [msg.parameters, duration])
         elif msg.name == 'rtl':
-            self._action(msg, self.uav.return_to_land, [False])
+            self._action(msg, self.uav.return_to_land, [False, duration])
         elif msg.name == 'lowbat_return':
-            self._action(msg, self.uav.return_to_land, [False])
+            self._action(msg, self.uav.return_to_land, [False, duration])
 
     def _action(self, action_dispatch, action_func, action_params=list()):
         """
@@ -237,28 +244,30 @@ class UAVInterface(object):
             params.append([KeyValue('v', self.name)])
             update_types.append(update_type)
             self.armed = self.uav.state.armed
-        # battery status update
-        if self.uav.low_battery and not self.lowbat:
-            update_type = KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE
-        elif not self.uav.low_battery and self.lowbat:
-            update_type = KnowledgeUpdateServiceRequest.REMOVE_KNOWLEDGE
-        if self.uav.low_battery != self.lowbat:
-            pred_names.append('lowbat')
-            params.append([KeyValue('v', self.name)])
-            update_types.append(update_type)
-            self.lowbat = self.uav.low_battery
-        # update state when necessary
         if pred_names != list():
             self.update_predicates(pred_names, params, update_types)
+        # battery status update
+        new_voltage = np.mean(self.uav.battery_voltages)
+        if abs(new_voltage - self.battery_voltage) > 0.01:
+            self.update_functions(
+                ['battery-amount'], [[KeyValue('r', self.name)]],
+                [new_voltage], [KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE])
+            self.battery_voltage = new_voltage
+            self.lowbat = self.uav.low_battery
 
     def set_init(self):
         """
         Set extra facts in initial states
         """
-        pred_names = ['home']
-        params = [[KeyValue('wp', 'wp0')]]
-        update_types = [KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE]
-        succeed = self.update_predicates(pred_names, params, update_types)
+        # add home wp position
+        succeed = self.update_predicates(
+            ['home'], [[KeyValue('wp', 'wp0')]],
+            [KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE])
+        # add minimum-battery condition
+        succeed = succeed and self.update_functions(
+            ['minimum-battery'], [[KeyValue('r', self.name)]],
+            [self.uav.MINIMUM_VOLTAGE],
+            [KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE])
         return succeed
 
     def set_instances(self):
@@ -293,7 +302,7 @@ class UAVInterface(object):
 
     def update_predicates(self, pred_names, parameters, update_types):
         """
-        Add / remove predicate facts or goals
+        Add / remove first order facts or goals
         """
         self.mutex.acquire()
         success = True
@@ -302,6 +311,23 @@ class UAVInterface(object):
             req.knowledge.knowledge_type = KnowledgeItem.FACT
             req.knowledge.attribute_name = pred_name
             req.knowledge.values.extend(parameters[idx])
+            req.update_type = update_types[idx]
+            success = success and self._knowledge_update_proxy(req).success
+        self.mutex.release()
+        return success
+
+    def update_functions(self, func_names, params, func_values, update_types):
+        """
+        Add / remove functions
+        """
+        self.mutex.acquire()
+        success = True
+        for idx, func_name in enumerate(func_names):
+            req = KnowledgeUpdateServiceRequest()
+            req.knowledge.knowledge_type = KnowledgeItem.FUNCTION
+            req.knowledge.attribute_name = func_name
+            req.knowledge.values = params[idx]
+            req.knowledge.function_value = func_values[idx]
             req.update_type = update_types[idx]
             success = success and self._knowledge_update_proxy(req).success
         self.mutex.release()
@@ -327,13 +353,51 @@ class UAVInterface(object):
             init_batt = float(preflightcheck._init_batt.get())
             min_batt = float(preflightcheck._low_batt.get())
             self.uav.set_battery(init_batt, min_batt)
-            response = self.uav.ACTION_SUCCESS
+            # add minimum-battery condition
+            succeed = self.update_functions(
+                ['minimum-battery'], [[KeyValue('r', self.name)]], [min_batt],
+                [KnowledgeUpdateServiceRequest.ADD_KNOWLEDGE])
+            resp = self.uav.ACTION_SUCCESS if succeed and self._preflightcheck(
+                preflightcheck) else self.uav.ACTION_FAIL
         except ValueError:
             rospy.logwarn('Pre-flight check doesn\'t have correct inputs!')
-            response = self.uav.ACTION_FAIL
+            resp = self.uav.ACTION_FAIL
         if (rospy.Time.now() - start) > duration:
-            response = self.OUT_OF_DURATION
-        return response
+            resp = self.uav.OUT_OF_DURATION
+        return resp
+
+    def _preflightcheck(self, preflightcheck):
+        pilot = preflightcheck._pilot.get() != ''
+        gc = preflightcheck._gc.get() != ''
+        location = preflightcheck._location.get() != ''
+        takeoff_amsl = ('%.2f' %
+                        float(preflightcheck._takeoff_amsl.get())) > 0.
+        planned_agl = ('%.2f' % float(preflightcheck._planned_agl.get())) > 0.
+        filled = (pilot and gc and location and takeoff_amsl and planned_agl)
+
+        rf_noise = preflightcheck._rf_noise.get()
+        airframe = preflightcheck._airframe.get()
+        hatch = preflightcheck._hatch.get()
+        range_check = preflightcheck._range_check.get()
+        ground_station = preflightcheck._ground_station.get()
+        cl = rf_noise and airframe and hatch and range_check and ground_station
+
+        telem = preflightcheck._telemetry_check.get()
+        transmitter = preflightcheck._transmitter_check.get()
+        magnetometer = preflightcheck._magnetometer_check.get()
+        gps = preflightcheck._gps_check.get()
+        ahrs = preflightcheck._ahrs_check.get()
+        cm = preflightcheck._camera_check.get()
+        cl2 = telem and transmitter and magnetometer and gps and ahrs and cm
+
+        barometer = preflightcheck._barometer_check.get()
+        motor = preflightcheck._motor_check.get()
+        airtraf = preflightcheck._airtraffic_check.get()
+        people = preflightcheck._people_check.get()
+        pilot_ch = preflightcheck._pilot_check.get()
+        gpsch = preflightcheck._gps_check.get()
+        cl3 = motor and barometer and airtraf and people and pilot_ch and gpsch
+        return filled and cl and cl2 and cl3
 
     def goto_waypoint(self, dispatch_params, duration=rospy.Duration(60, 0)):
         """
